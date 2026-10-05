@@ -147,6 +147,8 @@ const taskPackages = {
   },
 };
 
+const WIPE_COMPLETE_THRESHOLD = 0.96;
+
 const state = {
   view: { w: 960, h: 540, ratio: 1 },
   cameraReady: false,
@@ -198,7 +200,7 @@ const state = {
   invader: { targets: [], spawnClock: 0, bursts: [] },
   hold: { target: null, hold: 0 },
   trail: { phase: 0, target: { x: 0.5, y: 0.5 }, creditClock: 0 },
-  wipe: { cells: [], cols: 22, rows: 14, cleared: 0, ready: false },
+  wipe: { cells: [], cols: 22, rows: 14, cleared: 0, ready: false, rounds: 0, flash: 0 },
   ship: { targetTilt: 0, tilt: 0, hold: 0, changeClock: 0, bursts: [] },
   treasure: { targets: [], spawnClock: 0, bursts: [] },
   lastFrame: performance.now(),
@@ -737,7 +739,12 @@ function setScreen(screen) {
     const screens = (panel.dataset.screenPanel || "").split(/\s+/);
     panel.hidden = !screens.includes(screen);
   });
-  if (screen === "camera" || screen === "play") requestAnimationFrame(resizeCanvas);
+  if (screen === "camera" || screen === "play") {
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      resizeCanvas();
+    });
+  }
   if (screen === "settings") requestAnimationFrame(refreshWheelPickers);
   updateSettingsVisibility();
 }
@@ -889,12 +896,17 @@ function updateGame(dt) {
 }
 
 function checkCompletion() {
-  if (state.mode === "wipe" && wipeProgress() >= 0.86) {
-    endTask("clear");
-    return;
-  }
   if (els.goalType.value === "time" && state.sessionTime >= Number(els.goalSeconds.value)) {
     endTask("time");
+    return;
+  }
+  if (state.mode === "wipe" && wipeProgress() >= WIPE_COMPLETE_THRESHOLD) {
+    completeWipeLayer();
+    if (els.goalType.value === "count" && state.hits >= Number(els.goalCount.value)) {
+      endTask("count");
+    } else {
+      initWipe({ keepRounds: true, flash: 0.55 });
+    }
     return;
   }
   if (els.goalType.value === "count" && state.hits >= Number(els.goalCount.value)) {
@@ -1146,19 +1158,23 @@ function trailPlacement() {
   return { ...base, span: { x: 0.16, y: 0.05 } };
 }
 
-function initWipe() {
+function initWipe(options = {}) {
   const cols = 22;
   const rows = 14;
+  const rounds = options.keepRounds ? state.wipe.rounds : 0;
   state.wipe = {
     cells: Array.from({ length: cols * rows }, () => true),
     cols,
     rows,
     cleared: 0,
     ready: true,
+    rounds,
+    flash: options.flash || 0,
   };
 }
 
-function updateWipe() {
+function updateWipe(dt = 0) {
+  state.wipe.flash = Math.max(0, state.wipe.flash - dt);
   const hands = activeHands();
   if (!hands.length) return;
   const area = wipeArea();
@@ -1174,13 +1190,19 @@ function updateWipe() {
         state.wipe.cells[index] = false;
         state.wipe.cleared += 1;
         state.score += 1;
-        if (state.wipe.cleared % 8 === 0) {
-          state.hits += 1;
+        if (state.wipe.cleared % 10 === 0) {
           recordOutcome(cx / state.view.w, true);
         }
       }
     });
   });
+}
+
+function completeWipeLayer() {
+  state.wipe.rounds += 1;
+  state.hits += 1;
+  state.score += 25;
+  recordOutcome(0.5, true);
 }
 
 function nextShipTilt() {
@@ -1533,8 +1555,6 @@ function drawTrail() {
 function drawWipe() {
   const area = wipeArea();
   ctx.save();
-  ctx.fillStyle = "rgba(255, 107, 129, 0.48)";
-  ctx.fillRect(area.x, area.y, area.w, area.h);
   ctx.strokeStyle = "rgba(255, 247, 223, 0.36)";
   ctx.lineWidth = 3;
   ctx.strokeRect(area.x, area.y, area.w, area.h);
@@ -1552,7 +1572,21 @@ function drawWipe() {
   ctx.fillStyle = "#fff7df";
   ctx.font = "900 18px ui-rounded, system-ui, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText(`${Math.round(wipeProgress() * 100)}%`, area.x + area.w / 2, area.y + 30);
+  const progress = wipeProgress();
+  const displayProgress = progress >= WIPE_COMPLETE_THRESHOLD ? 100 : Math.floor(progress * 100);
+  ctx.fillText(`${displayProgress}%`, area.x + area.w / 2, area.y + 30);
+  if (els.goalType.value === "time") {
+    ctx.font = "800 13px ui-rounded, system-ui, sans-serif";
+    ctx.fillStyle = "#c8bfd0";
+    ctx.fillText(`クリア ${state.wipe.rounds}回`, area.x + area.w / 2, area.y + 52);
+  }
+  if (state.wipe.flash > 0) {
+    ctx.fillStyle = `rgba(255, 211, 90, ${0.25 + state.wipe.flash * 0.5})`;
+    ctx.fillRect(area.x, area.y, area.w, area.h);
+    ctx.fillStyle = "#fff7df";
+    ctx.font = "900 34px ui-rounded, system-ui, sans-serif";
+    ctx.fillText("もう一度!", area.x + area.w / 2, area.y + area.h / 2);
+  }
   ctx.restore();
 }
 
@@ -1852,8 +1886,14 @@ function buildResultSummary(reason) {
   const leftAttempts = s.hitLeft + s.missLeft;
   const rightAttempts = s.hitRight + s.missRight;
 
-  els.resultCurrent.textContent = `${state.hits}成功 / 正確性 ${accuracy}%`;
-  els.resultCurrentDetail.textContent = `${taskNames[state.mode]}を${Math.round(state.sessionTime)}秒実施。スコアは${state.score}です。`;
+  if (state.mode === "wipe") {
+    els.resultCurrent.textContent = `${state.hits}面クリア / スコア ${state.score}`;
+    els.resultCurrentDetail.textContent =
+      `${taskNames[state.mode]}を${Math.round(state.sessionTime)}秒実施。時間設定では、拭き切るたびに次の面が出ます。`;
+  } else {
+    els.resultCurrent.textContent = `${state.hits}成功 / 正確性 ${accuracy}%`;
+    els.resultCurrentDetail.textContent = `${taskNames[state.mode]}を${Math.round(state.sessionTime)}秒実施。スコアは${state.score}です。`;
+  }
   if (els.resultExpert) els.resultExpert.textContent = "左右差と保持を確認";
   if (els.resultExpertDetail) {
     els.resultExpertDetail.textContent =
