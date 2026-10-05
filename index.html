@@ -65,6 +65,15 @@
           </div>
         </section>
 
+        <section class="control-group update-panel" data-screen-panel="home">
+          <div>
+            <h2>アプリ更新</h2>
+            <p class="panel-note">配布後に画面が古い時は、ここから最新版を読み込みます。</p>
+          </div>
+          <button id="refreshApp" type="button">最新版を取得</button>
+          <p id="versionReadout" class="version-readout">Version 2026.10.05-2</p>
+        </section>
+
         <section class="control-group task-select-panel" data-screen-panel="home">
           <h2>課題を選ぶ</h2>
           <div class="task-grid" aria-label="課題選択">
@@ -278,10 +287,14 @@
         </section>
 
         <section class="control-group camera-panel" data-screen-panel="camera">
-          <h2>カメラ設定</h2>
-          <p class="panel-note">正面を向いて、座位または立位の楽な姿勢で基準を合わせます。</p>
-          <button id="startCamera" class="primary" type="button">カメラ開始</button>
-          <button id="calibrateInput" type="button">この姿勢を基準にする</button>
+          <div class="panel-copy">
+            <h2>カメラ設定</h2>
+            <p class="panel-note">正面を向いて、座位または立位の楽な姿勢で基準を合わせます。</p>
+          </div>
+          <div class="button-row camera-setup-actions">
+            <button id="startCamera" class="primary" type="button">カメラ開始</button>
+            <button id="calibrateInput" type="button">この姿勢を基準にする</button>
+          </div>
           <div class="tracker-chip">
             <span id="aiDot" class="status-dot" aria-hidden="true"></span>
             <span id="aiStatus">姿勢AI 読み込み中</span>
@@ -296,8 +309,10 @@
         </section>
 
         <section class="control-group runtime-panel" data-screen-panel="play">
-          <h2>課題実施</h2>
-          <p class="panel-note">3・2・1の後に始まります。終了したい時は下のボタンを押してください。</p>
+          <div class="panel-copy">
+            <h2>課題実施</h2>
+            <p class="panel-note">3・2・1の後に始まります。終了したい時は下のボタンを押してください。</p>
+          </div>
           <div class="button-row">
             <button id="endTask" class="primary" type="button">課題を終了</button>
             <button id="resetSession" type="button">やり直す</button>

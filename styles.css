@@ -85,6 +85,8 @@ button.primary {
 
 .app-shell[data-screen="camera"],
 .app-shell[data-screen="play"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(0, 1fr) auto;
   height: 100vh;
   height: 100svh;
   min-height: 0;
@@ -106,6 +108,7 @@ button.primary {
 .app-shell[data-screen="camera"] .stage-column,
 .app-shell[data-screen="play"] .stage-column {
   display: flex;
+  grid-row: 1;
 }
 
 .app-shell[data-screen="home"],
@@ -148,11 +151,9 @@ button.primary {
 
 .app-shell[data-screen="camera"] .stage-column,
 .app-shell[data-screen="play"] .stage-column {
-  height: 100vh;
-  height: 100svh;
-  max-height: 100vh;
-  max-height: 100svh;
-  padding: 12px;
+  height: auto;
+  max-height: none;
+  padding: 10px 10px 8px;
 }
 
 .topbar {
@@ -236,8 +237,13 @@ h2 {
 
 .app-shell[data-screen="camera"] .control-panel,
 .app-shell[data-screen="play"] .control-panel {
-  max-height: 100vh;
-  max-height: 100svh;
+  grid-row: 2;
+  max-height: none;
+  overflow: visible;
+  border-top: 2px solid var(--line);
+  border-left: 0;
+  background: rgba(26, 26, 42, 0.98);
+  padding: 8px 10px;
 }
 
 #camera {
@@ -293,9 +299,7 @@ h2 {
 
 .app-shell[data-screen="camera"] .stage-column > .safety-note,
 .app-shell[data-screen="play"] .stage-column > .safety-note {
-  padding: 6px 10px;
-  font-size: 12px;
-  line-height: 1.35;
+  display: none;
 }
 
 .control-panel {
@@ -344,10 +348,68 @@ h2 {
   padding-bottom: 0;
 }
 
+.app-shell[data-screen="camera"] .camera-panel,
+.app-shell[data-screen="play"] .runtime-panel {
+  align-items: center;
+  grid-template-columns: minmax(140px, 0.75fr) minmax(210px, 0.85fr) minmax(120px, 0.55fr) minmax(190px, 1fr) minmax(210px, 0.85fr);
+  gap: 8px;
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.app-shell[data-screen="play"] .runtime-panel {
+  grid-template-columns: minmax(170px, 1fr) minmax(260px, 0.85fr);
+}
+
+.panel-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.app-shell[data-screen="camera"] .camera-panel .panel-note,
+.app-shell[data-screen="play"] .runtime-panel .panel-note {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.app-shell[data-screen="camera"] .camera-panel button,
+.app-shell[data-screen="play"] .runtime-panel button {
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.app-shell[data-screen="camera"] .camera-panel .primary,
+.app-shell[data-screen="play"] .runtime-panel .primary {
+  width: auto;
+}
+
+.app-shell[data-screen="camera"] .camera-panel .button-row,
+.app-shell[data-screen="play"] .runtime-panel .button-row {
+  grid-template-columns: repeat(2, minmax(92px, 1fr));
+}
+
+.app-shell[data-screen="camera"] .camera-panel .safety-note {
+  border-left-width: 4px;
+  padding: 6px 9px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .home-hero {
   align-items: center;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 420px);
   min-height: 150px;
+}
+
+.update-panel {
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) 180px auto;
+}
+
+.version-readout {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .home-hero h2 {
@@ -782,6 +844,12 @@ select:disabled {
   .app-shell[data-screen="play"] .stage-column {
     height: auto;
     max-height: none;
+  }
+
+  .app-shell[data-screen="camera"] .camera-panel,
+  .app-shell[data-screen="play"] .runtime-panel,
+  .update-panel {
+    grid-template-columns: 1fr;
   }
 
   .control-panel {

@@ -5,6 +5,7 @@ const POSE_MODEL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 const HAND_MODEL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const APP_VERSION = "2026.10.05-2";
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("stage");
@@ -23,6 +24,8 @@ const els = {
   backSettings: document.getElementById("backSettings"),
   resultHome: document.getElementById("resultHome"),
   retryTask: document.getElementById("retryTask"),
+  refreshApp: document.getElementById("refreshApp"),
+  versionReadout: document.getElementById("versionReadout"),
   message: document.getElementById("message"),
   trackingStatus: document.getElementById("trackingStatus"),
   aiDot: document.getElementById("aiDot"),
@@ -715,6 +718,7 @@ function currentTaskLabel() {
 function selectTask(taskKey, nextScreen = "settings") {
   state.taskKey = taskKey;
   state.mode = modeForTask(taskKey);
+  applyModeDefaults();
   state.phase = "idle";
   state.input.point = null;
   els.taskCards.forEach((button) => button.classList.toggle("active", button.dataset.task === taskKey));
@@ -765,11 +769,18 @@ function updateReachSettingsVisibility() {
 function changeReachMode() {
   if (state.taskKey !== "reach") return;
   state.mode = els.reachMode.value;
+  applyModeDefaults();
   updateSelectedTaskCopy();
   updateSettingsVisibility();
   resetTaskState();
   setResultIdle();
   showMessage(currentTaskLabel(), "設定を確認し、課題開始を押すと3カウント後に始まります");
+}
+
+function applyModeDefaults() {
+  if (state.mode === "wipe") {
+    els.goalType.value = "time";
+  }
 }
 
 function syncReachRadius(source) {
@@ -784,6 +795,31 @@ function goHome() {
   resetTaskState();
   setResultIdle();
   setScreen("home");
+}
+
+async function refreshLatestVersion() {
+  if (els.refreshApp) {
+    els.refreshApp.disabled = true;
+    els.refreshApp.textContent = "取得中...";
+  }
+  if (els.versionReadout) els.versionReadout.textContent = "最新版を読み込み中";
+
+  try {
+    if ("serviceWorker" in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+    }
+    if ("caches" in window) {
+      const keys = await window.caches.keys();
+      await Promise.all(keys.map((key) => window.caches.delete(key)));
+    }
+  } catch (error) {
+    // Reload with a cache-busting query even if cache cleanup is unavailable.
+  }
+
+  const nextUrl = new URL(window.location.href);
+  nextUrl.searchParams.set("v", `${APP_VERSION}-${Date.now().toString(36)}`);
+  window.location.replace(nextUrl.toString());
 }
 
 function goSettings() {
@@ -2004,6 +2040,7 @@ els.backSettingsFromCamera.addEventListener("click", goSettings);
 els.backSettings.addEventListener("click", goSettings);
 els.resultHome.addEventListener("click", goHome);
 els.retryTask.addEventListener("click", startTask);
+if (els.refreshApp) els.refreshApp.addEventListener("click", refreshLatestVersion);
 els.difficulty.addEventListener("change", applyDifficultyPreset);
 els.customSettings.addEventListener("change", applyDifficultyPreset);
 els.reachMode.addEventListener("change", changeReachMode);
@@ -2041,6 +2078,7 @@ initWheelPickers();
 resetTaskState();
 syncReachRadius("main");
 updateSelectedTaskCopy();
+if (els.versionReadout) els.versionReadout.textContent = `Version ${APP_VERSION}`;
 setScreen("home");
 setResultIdle();
 initAI();
