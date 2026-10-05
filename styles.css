@@ -76,6 +76,17 @@ button.primary {
   font-weight: 800;
 }
 
+.monitor-toggle,
+[data-monitor-toggle] {
+  font-weight: 900;
+}
+
+[data-monitor-toggle][aria-pressed="true"] {
+  border-color: var(--sky);
+  background: rgba(94, 198, 255, 0.18);
+  color: var(--ink);
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 392px;
@@ -403,7 +414,7 @@ h2 {
 
 .update-panel {
   align-items: center;
-  grid-template-columns: minmax(0, 1fr) 180px auto;
+  grid-template-columns: minmax(0, 1fr) 170px 170px auto;
 }
 
 .version-readout {
@@ -899,5 +910,119 @@ select:disabled {
 
   .stage-wrap {
     min-height: 390px;
+  }
+}
+
+.app-shell.monitor-mode[data-screen="camera"],
+.app-shell.monitor-mode[data-screen="play"] {
+  position: relative;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100vh;
+  height: 100svh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .stage-column,
+.app-shell.monitor-mode[data-screen="play"] .stage-column {
+  grid-row: 1;
+  height: 100%;
+  max-height: none;
+  padding: 0;
+  gap: 0;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .topbar,
+.app-shell.monitor-mode[data-screen="play"] .topbar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  z-index: 4;
+  align-items: center;
+  flex-direction: row;
+  flex-wrap: wrap;
+  border: 2px solid rgba(255, 247, 223, 0.18);
+  border-radius: 8px;
+  background: rgba(16, 16, 24, 0.78);
+  padding: 8px 10px;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .topbar {
+  justify-content: flex-start;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] h1,
+.app-shell.monitor-mode[data-screen="play"] h1 {
+  font-size: 18px;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .muted,
+.app-shell.monitor-mode[data-screen="play"] .muted {
+  display: none;
+}
+
+.app-shell.monitor-mode[data-screen="play"] .metrics {
+  min-width: 250px;
+}
+
+.app-shell.monitor-mode[data-screen="play"] .metrics div {
+  padding: 6px 8px;
+}
+
+.app-shell.monitor-mode[data-screen="play"] .metrics strong {
+  font-size: 18px;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .stage-wrap,
+.app-shell.monitor-mode[data-screen="play"] .stage-wrap {
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .control-panel,
+.app-shell.monitor-mode[data-screen="play"] .control-panel {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  z-index: 5;
+  border: 2px solid rgba(255, 247, 223, 0.18);
+  border-radius: 8px;
+  background: rgba(26, 26, 42, 0.88);
+  padding: 6px 8px;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .camera-panel,
+.app-shell.monitor-mode[data-screen="play"] .runtime-panel {
+  gap: 6px;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .camera-panel .panel-note,
+.app-shell.monitor-mode[data-screen="camera"] .camera-panel .safety-note,
+.app-shell.monitor-mode[data-screen="play"] .runtime-panel .panel-note {
+  display: none;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .camera-panel button,
+.app-shell.monitor-mode[data-screen="play"] .runtime-panel button {
+  min-height: 34px;
+}
+
+@media (max-width: 760px) {
+  .app-shell.monitor-mode[data-screen="camera"] .topbar,
+  .app-shell.monitor-mode[data-screen="play"] .topbar,
+  .app-shell.monitor-mode[data-screen="camera"] .control-panel,
+  .app-shell.monitor-mode[data-screen="play"] .control-panel {
+    right: 6px;
+    left: 6px;
+  }
+
+  .app-shell.monitor-mode[data-screen="camera"] .camera-panel,
+  .app-shell.monitor-mode[data-screen="play"] .runtime-panel {
+    grid-template-columns: 1fr;
   }
 }

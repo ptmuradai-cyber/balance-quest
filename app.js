@@ -5,7 +5,7 @@ const POSE_MODEL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 const HAND_MODEL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const APP_VERSION = "2026.10.05-2";
+const APP_VERSION = "2026.10.05-3";
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("stage");
@@ -26,6 +26,7 @@ const els = {
   retryTask: document.getElementById("retryTask"),
   refreshApp: document.getElementById("refreshApp"),
   versionReadout: document.getElementById("versionReadout"),
+  monitorToggles: Array.from(document.querySelectorAll("[data-monitor-toggle]")),
   message: document.getElementById("message"),
   trackingStatus: document.getElementById("trackingStatus"),
   aiDot: document.getElementById("aiDot"),
@@ -155,6 +156,7 @@ const WIPE_COMPLETE_THRESHOLD = 0.96;
 const state = {
   view: { w: 960, h: 540, ratio: 1 },
   cameraReady: false,
+  monitorMode: false,
   screen: "home",
   taskKey: "reach",
   mode: "fall",
@@ -820,6 +822,34 @@ async function refreshLatestVersion() {
   const nextUrl = new URL(window.location.href);
   nextUrl.searchParams.set("v", `${APP_VERSION}-${Date.now().toString(36)}`);
   window.location.replace(nextUrl.toString());
+}
+
+function updateMonitorMode() {
+  els.appShell.classList.toggle("monitor-mode", state.monitorMode);
+  els.monitorToggles.forEach((button) => {
+    button.textContent = state.monitorMode ? "通常表示" : "モニター表示";
+    button.setAttribute("aria-pressed", String(state.monitorMode));
+  });
+  requestAnimationFrame(resizeCanvas);
+}
+
+async function toggleMonitorMode() {
+  state.monitorMode = !state.monitorMode;
+  updateMonitorMode();
+
+  if (state.monitorMode && document.documentElement.requestFullscreen && !document.fullscreenElement) {
+    try {
+      await document.documentElement.requestFullscreen();
+    } catch (error) {
+      // iPad Safariなど全画面化できない環境でも、表示レイアウトだけは切り替えます。
+    }
+  } else if (!state.monitorMode && document.fullscreenElement && document.exitFullscreen) {
+    try {
+      await document.exitFullscreen();
+    } catch (error) {
+      // Exiting fullscreen is best-effort only.
+    }
+  }
 }
 
 function goSettings() {
@@ -2041,6 +2071,7 @@ els.backSettings.addEventListener("click", goSettings);
 els.resultHome.addEventListener("click", goHome);
 els.retryTask.addEventListener("click", startTask);
 if (els.refreshApp) els.refreshApp.addEventListener("click", refreshLatestVersion);
+els.monitorToggles.forEach((button) => button.addEventListener("click", toggleMonitorMode));
 els.difficulty.addEventListener("change", applyDifficultyPreset);
 els.customSettings.addEventListener("change", applyDifficultyPreset);
 els.reachMode.addEventListener("change", changeReachMode);
@@ -2059,6 +2090,12 @@ window.addEventListener("keyup", (event) => {
   state.keys.delete(event.key);
 });
 window.addEventListener("resize", resizeCanvas);
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement && state.monitorMode) {
+    state.monitorMode = false;
+    updateMonitorMode();
+  }
+});
 
 if (!("roundRect" in CanvasRenderingContext2D.prototype)) {
   CanvasRenderingContext2D.prototype.roundRect = function roundRect(x, y, width, height, radius) {
@@ -2079,6 +2116,7 @@ resetTaskState();
 syncReachRadius("main");
 updateSelectedTaskCopy();
 if (els.versionReadout) els.versionReadout.textContent = `Version ${APP_VERSION}`;
+updateMonitorMode();
 setScreen("home");
 setResultIdle();
 initAI();
