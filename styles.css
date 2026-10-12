@@ -390,6 +390,24 @@ h2 {
   line-height: 1.35;
 }
 
+.safety-detail {
+  border-left: 4px solid var(--sky);
+  padding-left: 9px;
+}
+
+.safety-confirm {
+  border: 2px solid rgba(255, 211, 90, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 211, 90, 0.08);
+  padding: 8px 10px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
 .app-shell[data-screen="camera"] .camera-panel button,
 .app-shell[data-screen="play"] .runtime-panel button {
   min-height: 38px;

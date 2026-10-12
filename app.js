@@ -5,7 +5,9 @@ const POSE_MODEL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 const HAND_MODEL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const APP_VERSION = "2026.10.12-1";
+const APP_VERSION = "2026.10.12-2";
+const APP_PATH = "/balance-quest/";
+const CACHE_PREFIX = "balance-quest-";
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("stage");
@@ -32,6 +34,8 @@ const els = {
   aiDot: document.getElementById("aiDot"),
   aiStatus: document.getElementById("aiStatus"),
   basisNote: document.getElementById("basisNote"),
+  taskSafetyNote: document.getElementById("taskSafetyNote"),
+  safetyConfirmed: document.getElementById("safetyConfirmed"),
   selectedTaskTitle: document.getElementById("selectedTaskTitle"),
   selectedTaskLead: document.getElementById("selectedTaskLead"),
   difficulty: document.getElementById("difficulty"),
@@ -46,6 +50,7 @@ const els = {
   targetSize: document.getElementById("targetSize"),
   reachMode: document.getElementById("reachMode"),
   fallObject: document.getElementById("fallObject"),
+  fallHazard: document.getElementById("fallHazard"),
   fallSpeed: document.getElementById("fallSpeed"),
   fallCount: document.getElementById("fallCount"),
   reachRadius: document.getElementById("reachRadius"),
@@ -157,10 +162,20 @@ const basisNotes = {
   fall: "見ている場所：手首と指先を見ています。リンゴや形に手が近づくと成功です。",
   treasure: "見ている場所：手首と指先を見ています。宝箱に手が近づくと成功です。",
   wipe: "見ている場所：手首と指先を見ています。手で画面をふくと色が消えます。",
-  invader: "見ている場所：顔の中心付近を照準にします。体を動かしてターゲットに合わせます。",
-  hold: "見ている場所：座位では上半身、立位では体幹中心を基準にします。",
-  ship: "見ている場所：体幹中心を基準にします。船の上がっている側へ重さを乗せるイメージで戻します。",
-  trail: "見ている場所：座位では上半身、立位では体幹中心を基準にします。",
+  invader: "見ている場所：目と目の間を照準にします。首の動きだけでも照準が動きます。",
+  hold: "見ている場所：座位では肩まわり、立位では肩と腰の中間付近（推定）を基準にします。",
+  ship: "見ている場所：肩と腰の中間付近（推定）です。船の上がっている側へ体を寄せて戻します。",
+  trail: "見ている場所：座位では肩まわり、立位では肩と腰の中間付近（推定）を基準にします。",
+};
+
+const safetyNotes = {
+  fall: "落下物を追いすぎて前かがみにならないよう、支持物を近くに置きます。ハズレを混ぜる場合は灰色の×を避けます。",
+  treasure: "下方や画面端の宝箱は過度なリーチになりやすいため、座位または介助下で始めます。",
+  wipe: "画面全体に集中しすぎると姿勢が崩れやすいため、支持基底面内で届く範囲から始めます。",
+  invader: "照準合わせで首だけを大きく動かさないよう、体幹ごとゆっくり動くよう声かけします。",
+  hold: "止まる課題ではふらつきが出やすいため、立位では肘掛け付き椅子や支持物を手の届く位置に置きます。",
+  ship: "傾き刺激に反応して急に体を寄せすぎないよう、座位から開始し、外部モニターは正面に置きます。",
+  trail: "追従に集中すると足元や周囲への注意が下がるため、立位では介助者が近くで見守ります。",
 };
 
 const WIPE_COMPLETE_THRESHOLD = 0.96;
@@ -168,10 +183,12 @@ const WIPE_COMPLETE_THRESHOLD = 0.96;
 const state = {
   view: { w: 960, h: 540, ratio: 1 },
   cameraReady: false,
+  cameraStream: null,
   monitorMode: false,
   screen: "home",
   taskKey: "reach",
   mode: "fall",
+  sessionPosture: "unknown",
   phase: "idle",
   countdown: 0,
   sessionTime: 0,
@@ -203,6 +220,11 @@ const state = {
     source: "manual",
     confidence: 0,
     movement: 0,
+    trackingLost: false,
+  },
+  subject: {
+    current: null,
+    reference: null,
   },
   neutral: {
     aim: null,
@@ -246,6 +268,14 @@ function makeStats() {
     hitRight: 0,
     missLeft: 0,
     missRight: 0,
+    trackingLostTime: 0,
+    validTrackingTime: 0,
+    holdReachCount: 0,
+    holdReachTimeTotal: 0,
+    trailInsideTime: 0,
+    trailTotalTime: 0,
+    shipSuccess: 0,
+    shipFail: 0,
   };
 }
 
@@ -339,23 +369,32 @@ async function initAI() {
   try {
     const vision = await import(VISION_MODULE);
     const fileset = await vision.FilesetResolver.forVisionTasks(VISION_WASM);
+    const poseOptions = (delegate) => ({
+      baseOptions: { modelAssetPath: POSE_MODEL, delegate },
+      runningMode: "VIDEO",
+      numPoses: 1,
+      minPoseDetectionConfidence: 0.45,
+      minPosePresenceConfidence: 0.45,
+      minTrackingConfidence: 0.45,
+    });
+    const handOptions = (delegate) => ({
+      baseOptions: { modelAssetPath: HAND_MODEL, delegate },
+      runningMode: "VIDEO",
+      numHands: 2,
+      minHandDetectionConfidence: 0.35,
+      minHandPresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
+    });
+    const createWithFallback = async (creator, optionsFactory) => {
+      try {
+        return await creator(fileset, optionsFactory("GPU"));
+      } catch (gpuError) {
+        return creator(fileset, optionsFactory("CPU"));
+      }
+    };
     const [pose, hand] = await Promise.all([
-      vision.PoseLandmarker.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: POSE_MODEL, delegate: "GPU" },
-        runningMode: "VIDEO",
-        numPoses: 1,
-        minPoseDetectionConfidence: 0.45,
-        minPosePresenceConfidence: 0.45,
-        minTrackingConfidence: 0.45,
-      }),
-      vision.HandLandmarker.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: HAND_MODEL, delegate: "GPU" },
-        runningMode: "VIDEO",
-        numHands: 2,
-        minHandDetectionConfidence: 0.35,
-        minHandPresenceConfidence: 0.35,
-        minTrackingConfidence: 0.35,
-      }),
+      createWithFallback((taskFileset, options) => vision.PoseLandmarker.createFromOptions(taskFileset, options), poseOptions),
+      createWithFallback((taskFileset, options) => vision.HandLandmarker.createFromOptions(taskFileset, options), handOptions),
     ]);
     state.ai.pose = pose;
     state.ai.hand = hand;
@@ -389,14 +428,36 @@ async function startCamera() {
         height: { ideal: 720 },
       },
     });
+    stopCamera(false);
     video.srcObject = stream;
     await video.play();
+    state.cameraStream = stream;
     state.cameraReady = true;
     els.startCamera.textContent = "カメラ動作中";
     els.startCamera.disabled = true;
     hideMessage();
   } catch (error) {
     showMessage("カメラを開始できません", error.message || "ブラウザの権限を確認してください");
+  }
+}
+
+function stopCamera(updateUi = true) {
+  if (state.cameraStream) {
+    state.cameraStream.getTracks().forEach((track) => track.stop());
+  }
+  state.cameraStream = null;
+  if (video.srcObject) video.srcObject = null;
+  state.cameraReady = false;
+  state.ai.lastVideoTime = -1;
+  state.estimates.poseConfidence = 0;
+  state.estimates.handConfidence = 0;
+  state.estimates.hands = [];
+  state.input.trackingLost = false;
+  state.subject.current = null;
+  state.subject.reference = null;
+  if (updateUi && els.startCamera) {
+    els.startCamera.textContent = "カメラ開始";
+    els.startCamera.disabled = false;
   }
 }
 
@@ -414,7 +475,7 @@ function updateTracking(now) {
     state.ai.lastVideoTime = video.currentTime;
     try {
       const poseResult = state.ai.pose.detectForVideo(video, now);
-      const handResult = state.ai.hand.detectForVideo(video, now);
+      const handResult = usesHandsForMode() ? state.ai.hand.detectForVideo(video, now) : { landmarks: [], handednesses: [] };
       updateEstimatesFromResults(poseResult, handResult);
       autoCalibrateIfReady();
     } catch (error) {
@@ -432,13 +493,25 @@ function updateTracking(now) {
 
 function updateEstimatesFromResults(poseResult, handResult) {
   const landmarks = poseResult.landmarks?.[0] || null;
+  const subjectFrame = subjectFrameFromPose(landmarks);
+  state.subject.current = subjectFrame;
+  const subjectOk = subjectMatchesReference(subjectFrame);
   if (!landmarks) {
     state.estimates.aim = null;
     state.estimates.balance = null;
     state.estimates.upper = null;
     state.estimates.poseConfidence = Math.max(0, state.estimates.poseConfidence - 0.06);
-    state.estimates.hands = handPointsFromHandLandmarker(handResult);
+    state.estimates.hands = handPointsFromHandLandmarker(handResult).filter(pointNearSubject);
     state.estimates.handConfidence = confidenceFromHands(state.estimates.hands);
+    return;
+  }
+  if (!subjectOk) {
+    state.estimates.aim = null;
+    state.estimates.balance = null;
+    state.estimates.upper = null;
+    state.estimates.hands = [];
+    state.estimates.poseConfidence = Math.max(0, state.estimates.poseConfidence - 0.08);
+    state.estimates.handConfidence = 0;
     return;
   }
 
@@ -451,7 +524,7 @@ function updateEstimatesFromResults(poseResult, handResult) {
   const balance = estimateBalancePoint(shoulders, hips, posture);
   const upper = shoulders || aim;
   const hands = [...handPointsFromHandLandmarker(handResult), ...handPointsFromPose(landmarks)].filter(
-    (point) => point.score > 0.18
+    (point) => point.score > 0.18 && pointNearSubject(point)
   );
 
   state.estimates.aim = aim;
@@ -524,6 +597,59 @@ function confidenceFromHands(hands) {
   return clamp(Math.max(...hands.map((hand) => hand.score)), 0, 1);
 }
 
+function usesHandsForMode(mode = state.mode) {
+  return mode === "fall" || mode === "wipe" || mode === "treasure";
+}
+
+function subjectFrameFromPose(landmarks) {
+  if (!landmarks) return null;
+  const points = [11, 12, 23, 24, 25, 26]
+    .map((index) => landmarks[index])
+    .filter((landmark) => isVisible(landmark, 0.18))
+    .map(landmarkToStage);
+  if (points.length < 2) return null;
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const shoulderLeft = isVisible(landmarks[11], 0.18) ? landmarkToStage(landmarks[11]) : null;
+  const shoulderRight = isVisible(landmarks[12], 0.18) ? landmarkToStage(landmarks[12]) : null;
+  const shoulderSpan = shoulderLeft && shoulderRight ? Math.abs(shoulderLeft.x - shoulderRight.x) : maxX - minX;
+  const width = Math.max(maxX - minX, shoulderSpan * 1.35, state.view.w * 0.12);
+  const height = Math.max(maxY - minY, shoulderSpan * 1.8, state.view.h * 0.22);
+  return {
+    x: (minX + maxX) / 2,
+    y: (minY + maxY) / 2,
+    width,
+    height,
+    scale: Math.max(width, height),
+  };
+}
+
+function subjectMatchesReference(frame) {
+  const reference = state.subject.reference;
+  if (!frame || !reference) return true;
+  const dx = frame.x - reference.x;
+  const dy = frame.y - reference.y;
+  const distance = Math.hypot(dx, dy);
+  const allowed = Math.max(reference.scale * 0.95, state.view.w * 0.24);
+  const ratio = frame.scale / Math.max(1, reference.scale);
+  return distance <= allowed && ratio >= 0.45 && ratio <= 2.25;
+}
+
+function pointNearSubject(point) {
+  const reference = state.subject.reference || state.subject.current;
+  if (!point) return false;
+  if (!reference) return !(state.phase === "active" && state.cameraReady);
+  const dx = Math.abs(point.x - reference.x);
+  const dy = Math.abs(point.y - reference.y);
+  const allowedX = Math.max(reference.width * 3.2, state.view.w * 0.44);
+  const allowedY = Math.max(reference.height * 2.6, state.view.h * 0.52);
+  return dx <= allowedX && dy <= allowedY;
+}
+
 function autoCalibrateIfReady() {
   if (state.calibrationCaptured || state.estimates.poseConfidence < 0.3) return;
   captureNeutralFromEstimates();
@@ -536,6 +662,7 @@ function captureNeutralFromEstimates() {
     if (point) state.neutral[source] = { x: point.x, y: point.y };
   });
   if (state.input.point) state.neutral[state.input.source] = { x: state.input.point.x, y: state.input.point.y };
+  if (state.subject.current) state.subject.reference = { ...state.subject.current };
 }
 
 function updateManualPosition() {
@@ -551,19 +678,28 @@ function updateManualPosition() {
 function desiredInputSource() {
   if (state.mode === "invader") return "aim";
   if (state.mode === "fall" || state.mode === "wipe" || state.mode === "treasure") return "balance";
-  return state.estimates.posture === "seated" ? "upper" : "balance";
+  const posture = state.phase === "active" ? state.sessionPosture : state.estimates.posture;
+  return posture === "seated" ? "upper" : "balance";
 }
 
 function updateControlInput(now) {
   const keyboardActive = isKeyboardActive();
   const desiredSource = desiredInputSource();
   const estimatedPoint = state.estimates[desiredSource];
+  const trackingLost =
+    state.cameraReady &&
+    !keyboardActive &&
+    (state.ai.status !== "ready" || !estimatedPoint || estimatedPoint.score < 0.18);
   const useManual =
     keyboardActive ||
     !estimatedPoint ||
     estimatedPoint.score < 0.18 ||
     !state.cameraReady ||
     state.ai.status !== "ready";
+  if (trackingLost) {
+    markTrackingLost(now);
+    return;
+  }
   const source = useManual ? "manual" : desiredSource;
   const point = useManual
     ? {
@@ -575,8 +711,20 @@ function updateControlInput(now) {
   setControlPoint(point, source, now);
 }
 
+function markTrackingLost(now) {
+  state.input.source = "lost";
+  state.input.trackingLost = true;
+  state.input.confidence = lerp(state.input.confidence, 0, 0.3);
+  state.input.movement = steadyThreshold() * 2;
+  state.lastInputTick = now;
+}
+
 function isKeyboardActive() {
   return ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].some((key) => state.keys.has(key));
+}
+
+function hasUsableControl() {
+  return isKeyboardActive() || !state.cameraReady || !state.input.trackingLost;
 }
 
 function setControlPoint(point, source, now) {
@@ -597,11 +745,13 @@ function setControlPoint(point, source, now) {
   state.lastInputTick = now;
   state.input.point = next;
   state.input.source = source;
+  state.input.trackingLost = false;
   state.input.confidence = lerp(state.input.confidence, point.score || 0, 0.24);
   if (!state.neutral[source]) state.neutral[source] = { x: next.x, y: next.y };
 
   const neutral = state.neutral[source] || { x: state.view.w / 2, y: state.view.h * 0.55 };
-  const seated = state.estimates.posture === "seated";
+  const posture = state.phase === "active" ? state.sessionPosture : state.estimates.posture;
+  const seated = posture === "seated";
   const rangeX = state.view.w * (Number(els.shiftRange.value) / 100) * (seated ? 0.82 : 1);
   const rangeY = state.view.h * (Number(els.shiftRange.value) / 100) * (seated ? 0.62 : 0.82);
   state.controlX = clamp(0.5 + (next.x - neutral.x) / (2 * rangeX), 0, 1);
@@ -758,6 +908,15 @@ function updateSelectedTaskCopy() {
 function updateBasisNote() {
   if (!els.basisNote) return;
   els.basisNote.textContent = basisNotes[state.mode] || "見ている場所：姿勢と動きの中心を基準にします。";
+  if (els.taskSafetyNote) {
+    els.taskSafetyNote.textContent = safetyNotes[state.mode] || "周囲の環境を確認し、転倒に十分注意して実施します。";
+  }
+  updateStartTaskState();
+}
+
+function updateStartTaskState() {
+  if (!els.startTask || !els.safetyConfirmed) return;
+  els.startTask.disabled = state.screen === "camera" && !els.safetyConfirmed.checked;
 }
 
 function setScreen(screen) {
@@ -775,6 +934,7 @@ function setScreen(screen) {
   }
   if (screen === "settings") requestAnimationFrame(refreshWheelPickers);
   updateSettingsVisibility();
+  updateStartTaskState();
 }
 
 function soundIsEnabled() {
@@ -863,6 +1023,7 @@ function goHome() {
   state.countdown = 0;
   resetTaskState();
   setResultIdle();
+  stopCamera();
   setScreen("home");
 }
 
@@ -876,11 +1037,15 @@ async function refreshLatestVersion() {
   try {
     if ("serviceWorker" in navigator) {
       const registrations = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(registrations.map((registration) => registration.unregister()));
+      await Promise.all(
+        registrations
+          .filter((registration) => new URL(registration.scope).pathname.startsWith(APP_PATH))
+          .map((registration) => registration.unregister())
+      );
     }
     if ("caches" in window) {
       const keys = await window.caches.keys();
-      await Promise.all(keys.map((key) => window.caches.delete(key)));
+      await Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX)).map((key) => window.caches.delete(key)));
     }
   } catch (error) {
     // Reload with a cache-busting query even if cache cleanup is unavailable.
@@ -932,17 +1097,20 @@ function goCameraSettings() {
   state.mode = modeForTask(state.taskKey);
   state.phase = "idle";
   state.countdown = 0;
+  state.subject.reference = null;
   resetTaskState();
   setResultIdle();
+  if (els.safetyConfirmed) els.safetyConfirmed.checked = false;
   updateBasisNote();
   setScreen("camera");
-  showMessage("カメラ設定", "カメラを開始し、正面を向いてこの姿勢を基準にしてください");
+  const hazardText = state.mode === "fall" && els.fallHazard?.checked ? "灰色の×マークはハズレです。" : "";
+  showMessage("カメラ設定", `カメラを開始し、正面を向いてこの姿勢を基準にしてください。${hazardText}`);
 }
 
 function resetTaskState() {
   state.fall = { items: [], spawnClock: 0, bursts: [] };
   state.invader = { targets: [], spawnClock: 0, bursts: [] };
-  state.hold = { target: null, hold: 0 };
+  state.hold = { target: null, hold: 0, targetAge: 0, entered: false };
   state.trail = { phase: 0, target: { x: 0.5, y: 0.5 }, creditClock: 0 };
   state.ship = { targetTilt: 0, tilt: 0, hold: 0, changeClock: 0, bursts: [] };
   state.treasure = { targets: [], spawnClock: 0, bursts: [] };
@@ -952,6 +1120,11 @@ function resetTaskState() {
 }
 
 function startTask() {
+  if (els.safetyConfirmed && !els.safetyConfirmed.checked) {
+    showMessage("安全確認が必要です", "周囲・支持物・介助者の位置を確認してから開始してください");
+    updateStartTaskState();
+    return;
+  }
   state.mode = modeForTask(state.taskKey);
   updateBasisNote();
   primeAudio();
@@ -965,6 +1138,7 @@ function startTask() {
   state.stats = makeStats();
   resetTaskState();
   calibrateInput();
+  state.sessionPosture = state.estimates.posture || "unknown";
   hideMessage();
   setResultIdle();
 }
@@ -1052,6 +1226,11 @@ function checkCompletion() {
 
 function recordBalanceSample(dt) {
   const s = state.stats;
+  if (state.cameraReady && state.input.trackingLost && !isKeyboardActive()) {
+    s.trackingLostTime += dt;
+    return;
+  }
+  s.validTrackingTime += dt;
   const dx = state.controlX - 0.5;
   const dy = state.controlY - 0.5;
   s.samples += 1;
@@ -1061,7 +1240,7 @@ function recordBalanceSample(dt) {
   if (dx > 0.08) s.rightTime += dt;
   if (dy < -0.08) s.upTime += dt;
   if (dy > 0.08) s.downTime += dt;
-  if (state.input.movement < steadyThreshold() || state.input.source === "manual") s.steadyTime += dt;
+  if (state.input.movement < steadyThreshold() || (state.input.source === "manual" && !state.cameraReady)) s.steadyTime += dt;
   s.maxLeft = Math.max(s.maxLeft, clamp(-dx * 200, 0, 100));
   s.maxRight = Math.max(s.maxRight, clamp(dx * 200, 0, 100));
   s.maxUp = Math.max(s.maxUp, clamp(-dy * 200, 0, 100));
@@ -1087,6 +1266,7 @@ function recordOutcome(normX, success) {
 }
 
 function activeHands() {
+  if (state.cameraReady && state.input.trackingLost && !isKeyboardActive()) return [];
   const hands = state.estimates.hands.filter((hand) => hand.score > 0.2);
   if (hands.length) return hands;
   if (isKeyboardActive() || !state.cameraReady) {
@@ -1163,7 +1343,7 @@ function spawnFallItem() {
     y: -30,
     r: 18 + Math.random() * 13,
     speed: base * Number(els.fallSpeed.value) * (0.82 + Math.random() * 0.48),
-    hazard: Math.random() < 0.13,
+    hazard: Boolean(els.fallHazard?.checked) && Math.random() < 0.13,
     spin: Math.random() * Math.PI,
     kind: kinds[Math.floor(Math.random() * kinds.length)],
   };
@@ -1176,7 +1356,7 @@ function updateInvader(dt) {
     state.invader.targets.push(spawnTarget());
   }
 
-  const cursor = state.input.point;
+  const cursor = hasUsableControl() ? state.input.point : null;
   const size = Number(els.targetSize.value);
   const kept = [];
   for (const target of state.invader.targets) {
@@ -1238,13 +1418,22 @@ function nextHoldTarget() {
   ];
   state.hold.target = choices[Math.floor(Math.random() * choices.length)];
   state.hold.hold = 0;
+  state.hold.targetAge = 0;
+  state.hold.entered = false;
 }
 
 function updateHold(dt) {
   if (!state.hold.target) nextHoldTarget();
   const target = state.hold.target;
+  state.hold.targetAge += dt;
   const distance = Math.hypot(state.controlX - target.x, state.controlY - target.y);
-  const steady = state.input.movement < steadyThreshold() || state.input.source === "manual";
+  const usable = hasUsableControl();
+  const steady = usable && (state.input.movement < steadyThreshold() || (state.input.source === "manual" && !state.cameraReady));
+  if (usable && !state.hold.entered && distance < 0.15) {
+    state.hold.entered = true;
+    state.stats.holdReachCount += 1;
+    state.stats.holdReachTimeTotal += state.hold.targetAge;
+  }
   if (distance < 0.11 && steady) state.hold.hold += dt;
   else if (distance < 0.15) state.hold.hold = Math.max(0, state.hold.hold - dt * 0.2);
   else state.hold.hold = Math.max(0, state.hold.hold - dt * 0.85);
@@ -1274,7 +1463,12 @@ function updateTrail(dt) {
   const cx = area.x + state.controlX * area.w;
   const cy = area.y + state.controlY * area.h;
   const distance = Math.hypot(cx - tx, cy - ty);
-  if (distance < size) state.trail.creditClock += dt;
+  const usable = hasUsableControl();
+  if (usable) {
+    state.stats.trailTotalTime += dt;
+    if (distance < size) state.stats.trailInsideTime += dt;
+  }
+  if (usable && distance < size) state.trail.creditClock += dt;
   else state.trail.creditClock = Math.max(0, state.trail.creditClock - dt * 0.6);
   if (state.trail.creditClock > 0.28) {
     state.trail.creditClock = 0;
@@ -1374,6 +1568,10 @@ function updateShip(dt) {
   const netTilt = shipNetTilt();
   state.ship.tilt = lerp(state.ship.tilt, netTilt, 0.12);
   state.ship.changeClock -= dt;
+  if (!hasUsableControl()) {
+    state.ship.hold = Math.max(0, state.ship.hold - dt);
+    return;
+  }
 
   if (Math.abs(netTilt) <= profile.tolerance) state.ship.hold += dt;
   else state.ship.hold = Math.max(0, state.ship.hold - dt * 0.7);
@@ -1381,12 +1579,14 @@ function updateShip(dt) {
   if (state.ship.hold >= Number(els.holdSeconds.value)) {
     state.score += 12;
     state.hits += 1;
+    state.stats.shipSuccess += 1;
     playPicoSound();
     recordOutcome(state.ship.targetTilt > 0 ? 0.25 : 0.75, true);
     state.ship.bursts.push({ x: state.view.w / 2, y: state.view.h * 0.54, life: 0.42, ok: true });
     nextShipTilt();
   } else if (state.ship.changeClock <= 0) {
     state.misses += 1;
+    state.stats.shipFail += 1;
     recordOutcome(state.ship.targetTilt > 0 ? 0.25 : 0.75, false);
     state.ship.bursts.push({ x: state.view.w / 2, y: state.view.h * 0.54, life: 0.34, ok: false });
     nextShipTilt();
@@ -1528,12 +1728,20 @@ function drawFallObject(item, x, y) {
   ctx.translate(x, y);
   ctx.rotate(item.spin);
   if (item.hazard) {
-    ctx.fillStyle = "rgba(255, 107, 129, 0.94)";
+    ctx.fillStyle = "rgba(92, 94, 108, 0.96)";
     ctx.strokeStyle = "rgba(255, 247, 223, 0.85)";
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.rect(-item.r * 0.7, -item.r * 0.7, item.r * 1.4, item.r * 1.4);
+    ctx.arc(0, 0, item.r * 1.02, 0, Math.PI * 2);
     ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle = "#ff6b81";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(-item.r * 0.52, -item.r * 0.52);
+    ctx.lineTo(item.r * 0.52, item.r * 0.52);
+    ctx.moveTo(item.r * 0.52, -item.r * 0.52);
+    ctx.lineTo(-item.r * 0.52, item.r * 0.52);
     ctx.stroke();
     ctx.restore();
     return;
@@ -1733,10 +1941,19 @@ function drawWipe() {
   const progress = wipeProgress();
   const displayProgress = progress >= WIPE_COMPLETE_THRESHOLD ? 100 : Math.floor(progress * 100);
   ctx.fillText(`${displayProgress}%`, area.x + area.w / 2, area.y + 30);
+  ctx.strokeStyle = "rgba(255, 247, 223, 0.48)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect(area.x + 24, area.y + 42, area.w - 48, 14, 7);
+  ctx.stroke();
+  ctx.fillStyle = "#73d677";
+  ctx.beginPath();
+  ctx.roundRect(area.x + 27, area.y + 45, (area.w - 54) * clamp(progress, 0, 1), 8, 4);
+  ctx.fill();
   if (els.goalType.value === "time") {
     ctx.font = "800 13px ui-rounded, system-ui, sans-serif";
     ctx.fillStyle = "#c8bfd0";
-    ctx.fillText(`クリア ${state.wipe.rounds}回`, area.x + area.w / 2, area.y + 52);
+    ctx.fillText(`クリア ${state.wipe.rounds}回`, area.x + area.w / 2, area.y + 72);
   }
   if (state.wipe.flash > 0) {
     ctx.fillStyle = `rgba(255, 211, 90, ${0.25 + state.wipe.flash * 0.5})`;
@@ -2008,7 +2225,7 @@ function updateReadouts() {
   els.fallSpeedValue.textContent = `${Number(els.fallSpeed.value).toFixed(1)}x`;
   els.fallCountValue.textContent = els.fallCount.value;
   els.reachValue.textContent = `${els.reachRadius.value}px`;
-  if (els.reachValueTreasure) els.reachValueTreasure.textContent = `${els.reachRadius.value}px`;
+  if (els.reachValueTreasure) els.reachValueTreasure.textContent = `${els.reachRadiusMirror.value}px`;
   els.trailSpeedValue.textContent = `${Number(els.trailSpeed.value).toFixed(1)}x`;
   els.brushValue.textContent = `${els.brushSize.value}px`;
   updateTrackingStatus();
@@ -2034,28 +2251,73 @@ function updateTrackingStatus() {
   }
 }
 
-function buildResultSummary(reason) {
-  const total = state.hits + state.misses;
-  const accuracy = total ? Math.round((state.hits / total) * 100) : 0;
+function trackingLossSummary() {
+  const lost = state.stats.trackingLostTime || 0;
+  const pct = state.sessionTime ? Math.round((lost / state.sessionTime) * 100) : 0;
+  return `追跡できなかった時間：${lost.toFixed(1)}秒（${pct}%）`;
+}
+
+function sideStatsSummary() {
   const s = state.stats;
-  const leftPower = s.maxLeft + s.hitLeft * 5 - s.missLeft * 2;
-  const rightPower = s.maxRight + s.hitRight * 5 - s.missRight * 2;
-  const steadyRate = state.sessionTime ? s.steadyTime / state.sessionTime : 0;
   const leftAttempts = s.hitLeft + s.missLeft;
   const rightAttempts = s.hitRight + s.missRight;
+  return `参考（目安）：左側 試行${leftAttempts}回・成功${s.hitLeft}回・最大偏位${Math.round(
+    s.maxLeft
+  )}、右側 試行${rightAttempts}回・成功${s.hitRight}回・最大偏位${Math.round(
+    s.maxRight
+  )}。左右は画面上の出現位置で、使用した手の左右ではありません。`;
+}
 
-  if (state.mode === "wipe") {
-    els.resultCurrent.textContent = `${state.hits}面クリア / スコア ${state.score}`;
-    els.resultCurrentDetail.textContent =
-      `${taskNames[state.mode]}を${Math.round(state.sessionTime)}秒実施。時間設定では、拭き切るたびに次の面が出ます。`;
+function buildResultSummary(reason) {
+  const s = state.stats;
+  const total = state.hits + state.misses;
+  const accuracy = total ? Math.round((state.hits / total) * 100) : null;
+  const steadyBase = s.validTrackingTime || state.sessionTime;
+  const steadyRate = steadyBase ? s.steadyTime / steadyBase : 0;
+  const trackingText = trackingLossSummary();
+  const sideText = sideStatsSummary();
+  const leftAttempts = s.hitLeft + s.missLeft;
+  const rightAttempts = s.hitRight + s.missRight;
+  const leftScore = s.maxLeft + s.hitLeft * 5 - s.missLeft * 2;
+  const rightScore = s.maxRight + s.hitRight * 5 - s.missRight * 2;
+  const hasSideGap = Math.max(leftAttempts, rightAttempts) >= 2 && Math.abs(leftScore - rightScore) >= 14;
+  const accuracyModes = ["fall", "invader", "treasure"];
+
+  if (accuracyModes.includes(state.mode)) {
+    els.resultCurrent.textContent = `${state.hits}成功 / 正確性 ${accuracy ?? "-"}%`;
+    els.resultCurrentDetail.textContent = `${taskNames[state.mode]}を${Math.round(
+      state.sessionTime
+    )}秒実施。スコアは${state.score}です。${trackingText}。`;
+  } else if (state.mode === "hold") {
+    const avgReach = s.holdReachCount ? (s.holdReachTimeTotal / s.holdReachCount).toFixed(1) : "-";
+    els.resultCurrent.textContent = `${state.hits}回保持 / 平均到達 ${avgReach}秒`;
+    els.resultCurrentDetail.textContent = `移動後に止まれた回数と、目標付近へ入るまでの時間を見ます。保持安定は${Math.round(
+      steadyRate * 100
+    )}%です。${trackingText}。`;
+  } else if (state.mode === "trail") {
+    const insideRate = s.trailTotalTime ? Math.round((s.trailInsideTime / s.trailTotalTime) * 100) : 0;
+    els.resultCurrent.textContent = `目標内 ${insideRate}% / 加点 ${state.hits}回`;
+    els.resultCurrentDetail.textContent = `追いかけロードでは、目標の中に入力点が入っていた時間の割合を主に見ます。${trackingText}。`;
+  } else if (state.mode === "wipe") {
+    const progress = wipeProgress();
+    const displayProgress = progress >= WIPE_COMPLETE_THRESHOLD ? 100 : Math.floor(progress * 100);
+    els.resultCurrent.textContent = `${state.wipe.rounds}面クリア / 最終面 ${displayProgress}%`;
+    els.resultCurrentDetail.textContent = `窓ふきリーチを${Math.round(
+      state.sessionTime
+    )}秒実施。時間設定では、拭き切るたびに次の面が出ます。${trackingText}。`;
+  } else if (state.mode === "ship") {
+    els.resultCurrent.textContent = `${s.shipSuccess}回水平 / ${s.shipFail}回流れ`;
+    els.resultCurrentDetail.textContent = `船バランスでは、傾きが許容範囲に入って保持できた回数を見ます。保持安定は${Math.round(
+      steadyRate * 100
+    )}%です。${trackingText}。`;
   } else {
-    els.resultCurrent.textContent = `${state.hits}成功 / 正確性 ${accuracy}%`;
-    els.resultCurrentDetail.textContent = `${taskNames[state.mode]}を${Math.round(state.sessionTime)}秒実施。スコアは${state.score}です。`;
+    els.resultCurrent.textContent = `${state.hits}成功 / スコア ${state.score}`;
+    els.resultCurrentDetail.textContent = `${taskNames[state.mode]}を${Math.round(state.sessionTime)}秒実施。${trackingText}。`;
   }
+
   if (els.resultExpert) els.resultExpert.textContent = "左右差と保持を確認";
   if (els.resultExpertDetail) {
-    els.resultExpertDetail.textContent =
-      `左側${leftAttempts}回、右側${rightAttempts}回の反応を記録。保持安定は${Math.round(steadyRate * 100)}%です。`;
+    els.resultExpertDetail.textContent = `${sideText} 保持安定は${Math.round(steadyRate * 100)}%です。`;
   }
 
   if (state.sessionTime < 5 && state.hits === 0) {
@@ -2065,32 +2327,30 @@ function buildResultSummary(reason) {
     els.resultTrainingDetail.textContent = "同じ課題で、開始後に少し動いてから終了してください。";
     if (els.resultExpert) els.resultExpert.textContent = "判定材料が少なめ";
     if (els.resultExpertDetail) {
-      els.resultExpertDetail.textContent = "10秒以上の実施または3成功以上があると、左右差と次回設定の提案が安定します。";
+      els.resultExpertDetail.textContent = `${trackingText}。10秒以上の実施または3成功以上があると、次回設定の提案が安定します。`;
     }
     return;
   }
 
-  if (leftPower + 14 < rightPower) {
+  if (hasSideGap && leftScore < rightScore) {
     els.resultNext.textContent = "左側を少しやさしく";
-    els.resultNextDetail.textContent = "次回は左側配置、かんたんまたはふつうで成功数を増やす設定がおすすめです。";
+    els.resultNextDetail.textContent = "参考値では左側の成功数または移動量が少なめです。左側配置で大きめターゲットから始めます。";
     els.resultTraining.textContent = "宝箱リーチ";
     els.resultTrainingDetail.textContent =
-      "左側へのリーチ量を小さめから増やします。片側反応の低下がある場合は、立位ではふらつきに注意します。";
+      "画面左側へ届く範囲から始めます。立位では支持物を使い、ふらつきと前かがみを確認します。";
     if (els.resultExpert) els.resultExpert.textContent = "左側の反応を重点確認";
     if (els.resultExpertDetail) {
-      els.resultExpertDetail.textContent =
-        "左方向への重心移動またはリーチ反応が弱い可能性があります。座位で成功数を確保し、支持物ありの立位へ段階づけます。";
+      els.resultExpertDetail.textContent = `${sideText} 解釈文は参考です。画面左側への探索・重心移動・リーチのどこで難しさが出るかを観察します。`;
     }
-  } else if (rightPower + 14 < leftPower) {
+  } else if (hasSideGap && rightScore < leftScore) {
     els.resultNext.textContent = "右側を少しやさしく";
-    els.resultNextDetail.textContent = "右側配置でターゲットを大きめにし、確実に触れる設定から始めましょう。";
+    els.resultNextDetail.textContent = "参考値では右側の成功数または移動量が少なめです。右側配置で大きめターゲットから始めます。";
     els.resultTraining.textContent = "宝箱リーチ";
     els.resultTrainingDetail.textContent =
-      "右側に出る宝箱を開ける設定で、視覚探索とリーチ方向の再学習を組み合わせます。";
+      "画面右側へ届く範囲から始めます。立位では支持物を使い、ふらつきと前かがみを確認します。";
     if (els.resultExpert) els.resultExpert.textContent = "右側の反応を重点確認";
     if (els.resultExpertDetail) {
-      els.resultExpertDetail.textContent =
-        "右方向への反応速度や移動量が低い可能性があります。右側配置を大きめターゲットから始め、ふらつきを観察します。";
+      els.resultExpertDetail.textContent = `${sideText} 解釈文は参考です。画面右側への探索・重心移動・リーチのどこで難しさが出るかを観察します。`;
     }
   } else if (steadyRate < 0.42 && state.mode !== "fall" && state.mode !== "wipe") {
     els.resultNext.textContent = "保持を短めに";
@@ -2100,29 +2360,31 @@ function buildResultSummary(reason) {
       "支持基底面の中で止まる練習です。保持が難しい場合は座位から始め、静止時間を段階的に伸ばします。";
     if (els.resultExpert) els.resultExpert.textContent = "移動後保持が課題";
     if (els.resultExpertDetail) {
-      els.resultExpertDetail.textContent =
-        "移動後に静止する時間が短い傾向です。保持時間を短く、入力点の移動幅を小さくして反復します。";
+      els.resultExpertDetail.textContent = `${sideText} 移動後に静止する時間が短い目安です。保持時間を短く、入力点の移動幅を小さくして反復します。`;
     }
-  } else if (accuracy >= 80 && reason !== "manual") {
-    els.resultNext.textContent = "ひとつ難しく";
-    els.resultNextDetail.textContent = "次回は難易度を一段階上げるか、成功数を+5しても良さそうです。";
+  } else if (accuracyModes.includes(state.mode) && accuracy !== null && accuracy >= 80 && reason !== "manual") {
+    els.resultNext.textContent = "少しだけ難しく";
+    els.resultNextDetail.textContent = "命中率が高いため、次回は速度・個数・ターゲットサイズのどれか1つだけ上げます。";
     els.resultTraining.textContent = "船バランス";
     els.resultTrainingDetail.textContent =
-      "視覚的な傾きに合わせて重心を戻す課題へ進みます。座位で安定してから立位へ発展できます。";
-    if (els.resultExpert) els.resultExpert.textContent = "難易度を上げてもよい状態";
+      "視覚的な傾きに合わせて体を戻す課題へ進みます。座位で安定してから立位へ発展できます。";
+    if (els.resultExpert) els.resultExpert.textContent = "命中率は良好";
     if (els.resultExpertDetail) {
-      els.resultExpertDetail.textContent =
-        "成功率が高く、次回はターゲット縮小、保持時間延長、または船バランスで外乱要素を追加できます。";
+      els.resultExpertDetail.textContent = `${sideText} 難易度変更は、速度・個数・サイズのうち1条件のみで安全に確認します。`;
     }
+  } else if (state.mode === "ship" && s.shipSuccess >= 3 && s.shipFail === 0) {
+    els.resultNext.textContent = "波は維持か少し強め";
+    els.resultNextDetail.textContent = "船を戻す反応は安定しています。次回は同条件、または波の強さだけを一段階上げます。";
+    els.resultTraining.textContent = "船バランス";
+    els.resultTrainingDetail.textContent = "外部モニターは正面に置き、急な体幹移動にならない範囲で水平へ戻します。";
   } else {
     els.resultNext.textContent = "同じ設定で再挑戦";
-    els.resultNextDetail.textContent = "成功率を安定させてから、速度や移動幅を上げる流れが良さそうです。";
+    els.resultNextDetail.textContent = "成功数や目標内時間を安定させてから、速度や移動幅を上げる流れが良さそうです。";
     els.resultTraining.textContent = taskNames[state.mode];
     els.resultTrainingDetail.textContent = "今回と同じ課題で、姿勢を整えて基準セットしてから再開します。";
     if (els.resultExpert) els.resultExpert.textContent = "同条件で安定化";
     if (els.resultExpertDetail) {
-      els.resultExpertDetail.textContent =
-        "左右差は大きくありません。成功率が安定するまで同条件で反復し、その後に速度または移動幅を上げます。";
+      els.resultExpertDetail.textContent = `${sideText} 大きな左右差の目安はありません。条件を維持して再現性を確認します。`;
     }
   }
 }
@@ -2163,6 +2425,8 @@ els.backSettings.addEventListener("click", goSettings);
 els.resultHome.addEventListener("click", goHome);
 els.retryTask.addEventListener("click", startTask);
 if (els.refreshApp) els.refreshApp.addEventListener("click", refreshLatestVersion);
+if (els.safetyConfirmed) els.safetyConfirmed.addEventListener("change", updateStartTaskState);
+if (els.fallHazard) els.fallHazard.addEventListener("change", updateBasisNote);
 els.monitorToggles.forEach((button) => button.addEventListener("click", toggleMonitorMode));
 els.difficulty.addEventListener("change", applyDifficultyPreset);
 els.customSettings.addEventListener("change", applyDifficultyPreset);
@@ -2192,6 +2456,9 @@ document.addEventListener("fullscreenchange", () => {
     state.monitorMode = false;
     updateMonitorMode();
   }
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopCamera();
 });
 
 if (!("roundRect" in CanvasRenderingContext2D.prototype)) {
