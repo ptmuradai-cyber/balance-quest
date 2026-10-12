@@ -383,6 +383,13 @@ h2 {
   line-height: 1.35;
 }
 
+.basis-note {
+  color: var(--coin);
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
 .app-shell[data-screen="camera"] .camera-panel button,
 .app-shell[data-screen="play"] .runtime-panel button {
   min-height: 38px;
@@ -1005,6 +1012,10 @@ select:disabled {
 .app-shell.monitor-mode[data-screen="camera"] .camera-panel .safety-note,
 .app-shell.monitor-mode[data-screen="play"] .runtime-panel .panel-note {
   display: none;
+}
+
+.app-shell.monitor-mode[data-screen="camera"] .basis-note {
+  color: var(--ink);
 }
 
 .app-shell.monitor-mode[data-screen="camera"] .camera-panel button,

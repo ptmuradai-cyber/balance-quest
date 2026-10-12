@@ -5,7 +5,7 @@ const POSE_MODEL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 const HAND_MODEL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const APP_VERSION = "2026.10.05-3";
+const APP_VERSION = "2026.10.12-1";
 
 const video = document.getElementById("camera");
 const canvas = document.getElementById("stage");
@@ -31,6 +31,7 @@ const els = {
   trackingStatus: document.getElementById("trackingStatus"),
   aiDot: document.getElementById("aiDot"),
   aiStatus: document.getElementById("aiStatus"),
+  basisNote: document.getElementById("basisNote"),
   selectedTaskTitle: document.getElementById("selectedTaskTitle"),
   selectedTaskLead: document.getElementById("selectedTaskLead"),
   difficulty: document.getElementById("difficulty"),
@@ -38,6 +39,7 @@ const els = {
   goalCount: document.getElementById("goalCount"),
   goalSeconds: document.getElementById("goalSeconds"),
   customSettings: document.getElementById("customSettings"),
+  soundEnabled: document.getElementById("soundEnabled"),
   detailSettings: document.getElementById("detailSettings"),
   holdSeconds: document.getElementById("holdSeconds"),
   shiftRange: document.getElementById("shiftRange"),
@@ -151,6 +153,16 @@ const taskPackages = {
   },
 };
 
+const basisNotes = {
+  fall: "見ている場所：手首と指先を見ています。リンゴや形に手が近づくと成功です。",
+  treasure: "見ている場所：手首と指先を見ています。宝箱に手が近づくと成功です。",
+  wipe: "見ている場所：手首と指先を見ています。手で画面をふくと色が消えます。",
+  invader: "見ている場所：顔の中心付近を照準にします。体を動かしてターゲットに合わせます。",
+  hold: "見ている場所：座位では上半身、立位では体幹中心を基準にします。",
+  ship: "見ている場所：体幹中心を基準にします。船の上がっている側へ重さを乗せるイメージで戻します。",
+  trail: "見ている場所：座位では上半身、立位では体幹中心を基準にします。",
+};
+
 const WIPE_COMPLETE_THRESHOLD = 0.96;
 
 const state = {
@@ -172,6 +184,10 @@ const state = {
     pose: null,
     hand: null,
     lastVideoTime: -1,
+  },
+  audio: {
+    context: null,
+    lastPico: 0,
   },
   estimates: {
     aim: null,
@@ -736,6 +752,12 @@ function updateSelectedTaskCopy() {
   const task = taskPackages[state.taskKey] || taskPackages.reach;
   els.selectedTaskTitle.textContent = task.label;
   els.selectedTaskLead.textContent = task.lead;
+  updateBasisNote();
+}
+
+function updateBasisNote() {
+  if (!els.basisNote) return;
+  els.basisNote.textContent = basisNotes[state.mode] || "見ている場所：姿勢と動きの中心を基準にします。";
 }
 
 function setScreen(screen) {
@@ -753,6 +775,51 @@ function setScreen(screen) {
   }
   if (screen === "settings") requestAnimationFrame(refreshWheelPickers);
   updateSettingsVisibility();
+}
+
+function soundIsEnabled() {
+  return Boolean(els.soundEnabled?.checked);
+}
+
+function ensureAudioContext() {
+  if (!soundIsEnabled()) return null;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return null;
+  if (!state.audio.context) state.audio.context = new AudioContextClass();
+  return state.audio.context;
+}
+
+async function primeAudio() {
+  const audio = ensureAudioContext();
+  if (!audio) return;
+  if (audio.state === "suspended") {
+    try {
+      await audio.resume();
+    } catch (error) {
+      // Browsers may keep audio locked until a later direct user action.
+    }
+  }
+}
+
+function playPicoSound() {
+  const audio = ensureAudioContext();
+  if (!audio || audio.state !== "running") return;
+  const now = audio.currentTime;
+  if (now - state.audio.lastPico < 0.14) return;
+  state.audio.lastPico = now;
+
+  const osc = audio.createOscillator();
+  const gain = audio.createGain();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(960, now);
+  osc.frequency.exponentialRampToValueAtTime(1440, now + 0.055);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.12, now + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.115);
+  osc.connect(gain);
+  gain.connect(audio.destination);
+  osc.start(now);
+  osc.stop(now + 0.13);
 }
 
 function updateSettingsVisibility() {
@@ -867,6 +934,7 @@ function goCameraSettings() {
   state.countdown = 0;
   resetTaskState();
   setResultIdle();
+  updateBasisNote();
   setScreen("camera");
   showMessage("カメラ設定", "カメラを開始し、正面を向いてこの姿勢を基準にしてください");
 }
@@ -885,6 +953,8 @@ function resetTaskState() {
 
 function startTask() {
   state.mode = modeForTask(state.taskKey);
+  updateBasisNote();
+  primeAudio();
   setScreen("play");
   state.phase = "countdown";
   state.countdown = 3.2;
@@ -1058,6 +1128,7 @@ function updateFall(dt) {
       } else {
         state.score += 10;
         state.hits += 1;
+        playPicoSound();
         recordOutcome(item.x, true);
         state.fall.bursts.push({ x: ix, y: item.y, life: 0.28, color: "rgba(115, 214, 119, 0.95)" });
       }
@@ -1082,11 +1153,10 @@ function updateFall(dt) {
 function spawnFallItem() {
   const type = els.fallObject.value;
   const kindMap = {
-    food: ["apple", "orange", "carrot", "rice"],
+    apple: ["apple"],
     shapes: ["circle", "diamond", "square", "triangle"],
-    gems: ["star", "gem", "orb", "spark"],
   };
-  const kinds = kindMap[type] || kindMap.food;
+  const kinds = kindMap[type] || kindMap.apple;
   const base = els.difficulty.value === "easy" ? 108 : els.difficulty.value === "hard" ? 178 : 142;
   return {
     x: 0.08 + Math.random() * 0.84,
@@ -1115,6 +1185,7 @@ function updateInvader(dt) {
     if (hit) {
       state.score += 12;
       state.hits += 1;
+      playPicoSound();
       recordOutcome(target.x, true);
       state.invader.bursts.push({ x: target.x * state.view.w, y: target.y * state.view.h, life: 0.25 });
       continue;
@@ -1181,6 +1252,7 @@ function updateHold(dt) {
   if (state.hold.hold >= Number(els.holdSeconds.value)) {
     state.score += 12;
     state.hits += 1;
+    playPicoSound();
     recordOutcome(target.x, true);
     nextHoldTarget();
   }
@@ -1208,6 +1280,7 @@ function updateTrail(dt) {
     state.trail.creditClock = 0;
     state.score += 3;
     state.hits += 1;
+    playPicoSound();
     recordOutcome(target.x, true);
   }
 }
@@ -1268,6 +1341,7 @@ function completeWipeLayer() {
   state.wipe.rounds += 1;
   state.hits += 1;
   state.score += 25;
+  playPicoSound();
   recordOutcome(0.5, true);
 }
 
@@ -1291,7 +1365,7 @@ function shipProfile() {
 
 function shipNetTilt() {
   const correction = (state.controlX - 0.5) * 2;
-  return clamp(state.ship.targetTilt - correction, -1, 1);
+  return clamp(state.ship.targetTilt + correction, -1, 1);
 }
 
 function updateShip(dt) {
@@ -1307,12 +1381,13 @@ function updateShip(dt) {
   if (state.ship.hold >= Number(els.holdSeconds.value)) {
     state.score += 12;
     state.hits += 1;
-    recordOutcome(state.ship.targetTilt < 0 ? 0.25 : 0.75, true);
+    playPicoSound();
+    recordOutcome(state.ship.targetTilt > 0 ? 0.25 : 0.75, true);
     state.ship.bursts.push({ x: state.view.w / 2, y: state.view.h * 0.54, life: 0.42, ok: true });
     nextShipTilt();
   } else if (state.ship.changeClock <= 0) {
     state.misses += 1;
-    recordOutcome(state.ship.targetTilt < 0 ? 0.25 : 0.75, false);
+    recordOutcome(state.ship.targetTilt > 0 ? 0.25 : 0.75, false);
     state.ship.bursts.push({ x: state.view.w / 2, y: state.view.h * 0.54, life: 0.34, ok: false });
     nextShipTilt();
   }
@@ -1340,6 +1415,7 @@ function updateTreasure(dt) {
     if (touched) {
       state.score += 10;
       state.hits += 1;
+      playPicoSound();
       recordOutcome(target.x / state.view.w, true);
       state.treasure.bursts.push({ x: target.x, y: target.y, life: 0.36, color: "#ffd35a" });
       continue;
@@ -1462,15 +1538,33 @@ function drawFallObject(item, x, y) {
     ctx.restore();
     return;
   }
-  if (item.kind === "apple" || item.kind === "orange" || item.kind === "orb") {
-    ctx.fillStyle = item.kind === "apple" ? "#ff5d73" : "#ffd35a";
+  if (item.kind === "apple") {
+    ctx.fillStyle = "#ff5d73";
     ctx.strokeStyle = "#fff7df";
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.arc(0, 0, item.r, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-  } else if (item.kind === "carrot" || item.kind === "triangle") {
+    ctx.strokeStyle = "#7a4a2c";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(0, -item.r * 0.85);
+    ctx.lineTo(3, -item.r * 1.28);
+    ctx.stroke();
+    ctx.fillStyle = "#73d677";
+    ctx.beginPath();
+    ctx.ellipse(item.r * 0.32, -item.r * 1.05, item.r * 0.33, item.r * 0.16, -0.45, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (item.kind === "circle") {
+    ctx.fillStyle = "#5ec6ff";
+    ctx.strokeStyle = "#fff7df";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, item.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  } else if (item.kind === "triangle") {
     ctx.fillStyle = "#ff9d53";
     ctx.strokeStyle = "#fff7df";
     ctx.lineWidth = 3;
@@ -1481,7 +1575,7 @@ function drawFallObject(item, x, y) {
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-  } else if (item.kind === "diamond" || item.kind === "gem") {
+  } else if (item.kind === "diamond") {
     ctx.fillStyle = "#73d677";
     ctx.strokeStyle = "#fff7df";
     ctx.lineWidth = 3;
@@ -1493,8 +1587,6 @@ function drawFallObject(item, x, y) {
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-  } else if (item.kind === "star" || item.kind === "spark") {
-    drawStar(0, 0, item.r * 0.45, item.r, "#ffd35a");
   } else {
     ctx.fillStyle = "#5ec6ff";
     ctx.strokeStyle = "#fff7df";
@@ -2074,6 +2166,11 @@ if (els.refreshApp) els.refreshApp.addEventListener("click", refreshLatestVersio
 els.monitorToggles.forEach((button) => button.addEventListener("click", toggleMonitorMode));
 els.difficulty.addEventListener("change", applyDifficultyPreset);
 els.customSettings.addEventListener("change", applyDifficultyPreset);
+if (els.soundEnabled) {
+  els.soundEnabled.addEventListener("change", () => {
+    if (soundIsEnabled()) primeAudio();
+  });
+}
 els.reachMode.addEventListener("change", changeReachMode);
 els.reachRadius.addEventListener("input", () => syncReachRadius("main"));
 els.reachRadiusMirror.addEventListener("input", () => syncReachRadius("mirror"));

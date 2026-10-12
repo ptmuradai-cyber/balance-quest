@@ -73,7 +73,7 @@
           </div>
           <button id="refreshApp" type="button">最新版を取得</button>
           <button data-monitor-toggle type="button">モニター表示</button>
-          <p id="versionReadout" class="version-readout">Version 2026.10.05-3</p>
+          <p id="versionReadout" class="version-readout">Version 2026.10.12-1</p>
         </section>
 
         <section class="control-group task-select-panel" data-screen-panel="home">
@@ -133,9 +133,8 @@
           <label class="field" data-reach-kind="fall">
             <span>落下物</span>
             <select id="fallObject">
-              <option value="food" selected>食べ物</option>
+              <option value="apple" selected>リンゴ</option>
               <option value="shapes">形</option>
-              <option value="gems">光るターゲット</option>
             </select>
           </label>
           <div class="detail-settings task-detail" data-reach-kind="fall">
@@ -265,6 +264,10 @@
             <input id="customSettings" type="checkbox">
             <span>詳細設定</span>
           </label>
+          <label class="check-row">
+            <input id="soundEnabled" type="checkbox" checked>
+            <span>効果音を鳴らす</span>
+          </label>
           <div id="detailSettings" class="detail-settings" aria-label="詳細設定">
             <label class="field">
               <span>保持時間 <output id="holdValue">1.0s</output></span>
@@ -292,6 +295,7 @@
           <div class="panel-copy">
             <h2>カメラ設定</h2>
             <p class="panel-note">正面を向いて、座位または立位の楽な姿勢で基準を合わせます。</p>
+            <p id="basisNote" class="basis-note">見ている場所：リーチでは手首と指先を見ています。</p>
           </div>
           <div class="button-row camera-setup-actions">
             <button id="startCamera" class="primary" type="button">カメラ開始</button>
